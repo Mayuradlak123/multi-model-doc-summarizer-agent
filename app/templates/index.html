@@ -1,0 +1,777 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-10">
+    <!-- Main Welcome Banner -->
+    <div class="text-center max-w-3xl mx-auto space-y-4">
+        <h2 class="display-font text-4xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
+            Summarize Any Document <br>
+            <span class="bg-gradient-to-r from-brand-400 via-violet-300 to-indigo-400 bg-clip-text text-transparent">
+                With Stateful Multi-Model Agents
+            </span>
+        </h2>
+        <p class="text-slate-400 text-sm sm:text-base max-w-2xl mx-auto font-light">
+            Upload documents up to <span class="text-brand-300 font-medium">1 MB</span>. 
+            Tasks are executed asynchronously via a Redis Queue worker running a LangGraph State Machine.
+        </p>
+    </div>
+
+    <!-- System Health Observability Badges -->
+    <div class="max-w-4xl mx-auto bg-slate-900/20 border border-slate-800/80 rounded-2xl p-4 flex flex-wrap items-center justify-around gap-4 text-xs backdrop-blur-sm">
+        <span class="text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">
+            <i class="fa-solid fa-heart-pulse text-brand-400 animate-pulse"></i> Circuit Breakers Status:
+        </span>
+        <div class="flex items-center gap-2">
+            <span class="text-slate-400 font-medium">Groq LLM:</span>
+            <span id="health-llm" class="px-2 py-0.5 rounded font-mono bg-slate-800 text-slate-400 border border-slate-700">LOADING</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="text-slate-400 font-medium">ChromaDB:</span>
+            <span id="health-chroma" class="px-2 py-0.5 rounded font-mono bg-slate-800 text-slate-400 border border-slate-700">LOADING</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="text-slate-400 font-medium">Redis Queue:</span>
+            <span id="health-redis" class="px-2 py-0.5 rounded font-mono bg-slate-800 text-slate-400 border border-slate-700">LOADING</span>
+        </div>
+    </div>
+
+    <!-- Alert about Config Status if Mocking -->
+    {% if not is_groq_configured %}
+    <div class="max-w-4xl mx-auto bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex gap-3 text-amber-200 text-xs sm:text-sm">
+        <div class="flex-shrink-0 text-amber-500 mt-0.5"><i class="fa-solid fa-triangle-exclamation text-lg"></i></div>
+        <div>
+            <span class="font-bold">Notice: Running in Mock Mode.</span> 
+            No <code class="bg-amber-950 px-1 rounded text-amber-300">GROQ_API_KEY</code> detected in environment variables. 
+            The background worker will simulate the LangGraph state machine execution and return high-quality mockup highlights.
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Core Grid Container -->
+    <div id="dashboard-container" class="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 items-start transition-all duration-500">
+        
+        <!-- Left Column -->
+        <div id="main-content-col" class="col-span-12 transition-all duration-500 space-y-8">
+        
+        <!-- Upload Card -->
+        <div class="bg-slate-900/40 border border-slate-800 rounded-3xl p-6 sm:p-8 backdrop-blur-sm relative overflow-hidden group">
+            <div class="absolute -top-24 -left-24 w-48 h-48 bg-brand-600/10 rounded-full blur-3xl group-hover:bg-brand-600/20 transition-all duration-700"></div>
+            
+            <form id="upload-form" class="space-y-6">
+                <div id="drop-zone" class="border-2 border-dashed border-slate-700 hover:border-brand-500/80 rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 bg-slate-950/40 flex flex-col items-center justify-center gap-4 relative overflow-hidden group/zone">
+                    <input type="file" id="file-input" name="file" class="hidden" accept=".txt,.pdf,.docx,.doc,.md,.markdown">
+                    
+                    <div class="h-16 w-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 group-hover/zone:scale-110 group-hover/zone:text-brand-400 transition-all duration-300 shadow-inner">
+                        <i class="fa-solid fa-cloud-arrow-up text-2xl"></i>
+                    </div>
+                    
+                    <div class="space-y-1">
+                        <p class="text-sm font-semibold text-slate-200">Drag & drop your document here, or <span class="text-brand-400 hover:underline">browse</span></p>
+                        <p class="text-xs text-slate-500">Supports PDF, DOCX, TXT, or MD (Max 1MB)</p>
+                    </div>
+                    
+                    <div id="selected-file-info" class="hidden flex items-center gap-2 bg-slate-900/80 border border-brand-800/40 px-3 py-1.5 rounded-full text-xs text-slate-300">
+                        <i class="fa-solid fa-file-invoice text-brand-400"></i>
+                        <span id="selected-file-name" class="font-medium">filename.pdf</span>
+                        <button type="button" id="clear-file-btn" class="hover:text-red-400 ml-1"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                </div>
+                
+                <div class="flex justify-end">
+                    <button type="submit" id="submit-btn" disabled class="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-medium rounded-xl shadow-lg shadow-brand-500/10 hover:shadow-brand-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-300 flex items-center justify-center gap-2">
+                        <span>Process Document</span>
+                        <i class="fa-solid fa-circle-play"></i>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Processing State Card (Logs) -->
+        <div id="processing-card" class="hidden bg-slate-900/40 border border-slate-800 rounded-3xl p-6 sm:p-8 backdrop-blur-sm space-y-6">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+                <div class="flex items-center gap-3">
+                    <i class="fa-solid fa-spinner animate-spin text-brand-400 text-lg"></i>
+                    <h3 class="display-font font-bold text-lg text-white">Redis Worker Job Progress</h3>
+                </div>
+                <span id="job-status-badge" class="text-xs bg-slate-800 text-brand-300 font-mono px-2.5 py-1 rounded-full">queued</span>
+            </div>
+            
+            <div class="space-y-4">
+                <!-- Step Ingestion -->
+                <div id="log-step-ingestion" class="flex items-start gap-3 text-sm text-slate-400">
+                    <div class="step-icon mt-0.5"><i class="fa-regular fa-circle text-slate-600"></i></div>
+                    <div class="flex-grow space-y-1">
+                        <p class="font-semibold text-slate-300">Document Ingestion & Validation</p>
+                        <p class="text-xs text-slate-500 status-msg">Waiting in Redis Queue...</p>
+                    </div>
+                </div>
+                
+                <!-- Step Vector Store -->
+                <div id="log-step-vector" class="flex items-start gap-3 text-sm text-slate-400">
+                    <div class="step-icon mt-0.5"><i class="fa-regular fa-circle text-slate-600"></i></div>
+                    <div class="flex-grow space-y-1">
+                        <p class="font-semibold text-slate-300">Text Chunking & ChromaDB Vector Indexing</p>
+                        <p class="text-xs text-slate-500 status-msg">Waiting...</p>
+                    </div>
+                </div>
+
+                <!-- Step Extract (Model 1) -->
+                <div id="log-step-extract" class="flex items-start gap-3 text-sm text-slate-400">
+                    <div class="step-icon mt-0.5"><i class="fa-regular fa-circle text-slate-600"></i></div>
+                    <div class="flex-grow space-y-1">
+                        <p class="font-semibold text-slate-300">LangGraph State 1: Chunk Highlight Extraction</p>
+                        <p class="text-xs font-mono text-brand-400 tracking-wider">llama-3.1-8b-instant</p>
+                        <p class="text-xs text-slate-500 status-msg">Waiting...</p>
+                    </div>
+                </div>
+
+                <!-- Step Synthesize (Model 2) -->
+                <div id="log-step-synthesize" class="flex items-start gap-3 text-sm text-slate-400">
+                    <div class="step-icon mt-0.5"><i class="fa-regular fa-circle text-slate-600"></i></div>
+                    <div class="flex-grow space-y-1">
+                        <p class="font-semibold text-slate-300">LangGraph State 2: Synthesis & Deduplication</p>
+                        <p class="text-xs font-mono text-brand-400 tracking-wider">llama-3.3-70b-versatile</p>
+                        <p class="text-xs text-slate-500 status-msg">Waiting...</p>
+                    </div>
+                </div>
+
+                <!-- Step Meta-Analysis (Model 3) -->
+                <div id="log-step-meta" class="flex items-start gap-3 text-sm text-slate-400">
+                    <div class="step-icon mt-0.5"><i class="fa-regular fa-circle text-slate-600"></i></div>
+                    <div class="flex-grow space-y-1">
+                        <p class="font-semibold text-slate-300">LangGraph State 3: Executive Summary & Tags</p>
+                        <p class="text-xs font-mono text-brand-400 tracking-wider">llama-3.1-8b-instant</p>
+                        <p class="text-xs text-slate-500 status-msg">Waiting...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Alert -->
+        <div id="error-card" class="hidden bg-red-500/10 border border-red-500/20 rounded-3xl p-6 text-red-200 flex gap-3 text-sm">
+            <div class="text-red-500 text-lg mt-0.5"><i class="fa-solid fa-circle-exclamation"></i></div>
+            <div>
+                <p class="font-bold">Pipeline Error</p>
+                <p id="error-message-text" class="text-xs text-red-300 mt-1">Failed to upload document.</p>
+            </div>
+        </div>
+
+        <!-- Result Container Card -->
+        <div id="result-card" class="hidden bg-slate-900/40 border border-slate-800 rounded-3xl p-6 sm:p-8 backdrop-blur-sm space-y-8">
+            
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-800 pb-6 gap-4">
+                <div class="space-y-1">
+                    <span class="text-xs text-brand-400 font-bold uppercase tracking-wider">Agent Evaluation Completed</span>
+                    <h3 id="result-filename" class="display-font font-bold text-2xl text-white">document_spec.pdf</h3>
+                </div>
+                
+                <div class="flex flex-wrap gap-2 text-xs">
+                    <span id="badge-size" class="bg-slate-800 text-slate-300 px-3 py-1.5 rounded-full border border-slate-700">0.0 KB</span>
+                    <span id="badge-chunks" class="bg-slate-800 text-slate-300 px-3 py-1.5 rounded-full border border-slate-700">0 Chunks</span>
+                    <span id="badge-chroma" class="bg-emerald-500/10 text-emerald-400 px-3 py-1.5 rounded-full border border-emerald-500/20">Indexed in Chroma</span>
+                </div>
+            </div>
+
+            <!-- LangSmith and Pipeline Metadata Section -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-slate-950/60 rounded-2xl border border-slate-800/80 p-4 space-y-3">
+                    <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="fa-solid fa-magnifying-glass-chart text-brand-400"></i> Observability Trace
+                    </p>
+                    <div id="langsmith-active-box" class="space-y-2">
+                        <p class="text-xs text-slate-300">LangSmith tracing recorded the full call logs across models:</p>
+                        <a id="langsmith-link" href="#" target="_blank" class="inline-flex items-center gap-2 text-xs font-semibold text-brand-400 hover:text-brand-300 transition-colors">
+                            <span>Open LangSmith Trace</span>
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                        </a>
+                    </div>
+                    <div id="langsmith-mock-box" class="hidden text-xs text-slate-500">
+                        LangSmith is run in local fallback mode. Tracing credentials were not detected.
+                    </div>
+                </div>
+
+                <div class="bg-slate-950/60 rounded-2xl border border-slate-800/80 p-4 space-y-3">
+                    <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="fa-solid fa-tags text-indigo-400"></i> Metadata Tags
+                    </p>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                            <span class="text-slate-500 block">Tone:</span>
+                            <span id="result-tone" class="font-medium text-slate-300">Professional</span>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 block">Category:</span>
+                            <span id="result-category" class="font-medium text-slate-300">Architecture Spec</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Executive Summary Block -->
+            <div class="bg-gradient-to-r from-brand-900/10 to-indigo-900/10 border border-brand-800/30 rounded-2xl p-6 relative">
+                <i class="fa-solid fa-quote-left absolute top-4 right-4 text-brand-500/10 text-4xl"></i>
+                <div class="space-y-2">
+                    <h4 class="text-xs text-brand-400 font-bold uppercase tracking-wider">Executive Summary</h4>
+                    <p id="result-exec-summary" class="text-slate-300 text-sm sm:text-base leading-relaxed italic">
+                        Summarizing...
+                    </p>
+                </div>
+            </div>
+
+            <!-- Categorized Highlights Block -->
+            <div class="space-y-4">
+                <h4 class="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i class="fa-solid fa-list-check text-brand-400"></i> Key Document Highlights
+                </h4>
+                <div id="highlights-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+
+            <!-- Key Entities Block -->
+            <div class="space-y-3 border-t border-slate-800 pt-6">
+                <h4 class="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i class="fa-solid fa-hashtag text-brand-400"></i> Extracted Entities
+                </h4>
+                <div id="entities-container" class="flex flex-wrap gap-2"></div>
+            </div>
+
+            <!-- Timeline of models -->
+            <div class="border-t border-slate-800 pt-6 space-y-4">
+                <h4 class="text-xs text-slate-400 font-bold uppercase tracking-wider">Multi-Model Pipelines Used</h4>
+                <div id="timeline-container" class="grid grid-cols-1 sm:grid-cols-3 gap-4"></div>
+            </div>
+
+        </div>
+
+        </div>
+
+        <!-- Right Column (Chat Sidebar) -->
+        <div id="chat-sidebar" class="hidden lg:col-span-4 bg-slate-900/40 border border-slate-800 rounded-3xl p-6 backdrop-blur-sm h-[600px] flex-col transition-all duration-500 relative overflow-hidden group">
+            <div class="absolute -top-24 -right-24 w-48 h-48 bg-brand-600/5 rounded-full blur-3xl group-hover:bg-brand-600/10 transition-all duration-700"></div>
+            
+            <!-- Header -->
+            <div class="border-b border-slate-850 pb-3 flex items-center justify-between relative z-10">
+                <div class="flex items-center gap-2">
+                    <div class="w-2.5 h-2.5 bg-brand-400 rounded-full animate-pulse"></div>
+                    <span class="font-bold text-xs tracking-wider uppercase text-slate-200">Document Assistant</span>
+                </div>
+                <button type="button" id="clear-chat-btn" class="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors">
+                    <i class="fa-solid fa-trash-can text-[9px]"></i> Clear Chat
+                </button>
+            </div>
+            
+            <!-- Chat Messages Window -->
+            <div id="chat-messages" class="flex-grow overflow-y-auto my-4 space-y-4 pr-1 text-xs scrollbar-thin relative z-10 scroll-smooth">
+                <!-- Welcome bot message will be inserted dynamically -->
+            </div>
+            
+            <!-- Typing Indicator (Hidden by default) -->
+            <div id="chat-typing" class="hidden items-center gap-2 text-[10px] text-slate-500 mb-3 px-3 py-1 bg-slate-950/30 rounded-xl w-max border border-slate-900/50">
+                <div class="flex gap-1">
+                    <span class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+                    <span class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style="animation-delay: 150ms"></span>
+                    <span class="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style="animation-delay: 300ms"></span>
+                </div>
+                <span>Assistant is reading...</span>
+            </div>
+            
+            <!-- Input Form -->
+            <form id="chat-form" class="flex gap-2 border-t border-slate-850 pt-3 mt-auto relative z-10">
+                <input type="text" id="chat-input" placeholder="Ask a question..." autocomplete="off" class="flex-grow bg-slate-950/60 border border-slate-800/80 focus:border-brand-500/80 text-xs text-white rounded-xl px-3 py-2.5 outline-none transition-all placeholder-slate-600">
+                <button type="submit" id="chat-send-btn" class="bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-medium rounded-xl px-4 py-2.5 transition-all text-xs flex items-center justify-center shadow-lg shadow-brand-500/5 hover:shadow-brand-500/15">
+                    <i class="fa-solid fa-paper-plane"></i>
+                </button>
+            </form>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const form = document.getElementById('upload-form');
+    const selectedFileInfo = document.getElementById('selected-file-info');
+    const selectedFileName = document.getElementById('selected-file-name');
+    const clearFileBtn = document.getElementById('clear-file-btn');
+    const submitBtn = document.getElementById('submit-btn');
+    
+    const processingCard = document.getElementById('processing-card');
+    const jobStatusBadge = document.getElementById('job-status-badge');
+    const resultCard = document.getElementById('result-card');
+    const errorCard = document.getElementById('error-card');
+    const errorMessageText = document.getElementById('error-message-text');
+
+    let pollInterval = null;
+
+    // Drag and drop events
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-brand-500', 'bg-slate-900/60');
+        }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-brand-500', 'bg-slate-900/60');
+        }, false);
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length) {
+            handleSelectedFile(files[0]);
+        }
+    });
+
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        if (fileInput.files.length) {
+            handleSelectedFile(fileInput.files[0]);
+        }
+    });
+
+    clearFileBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        fileInput.value = '';
+        selectedFileInfo.classList.add('hidden');
+        submitBtn.disabled = true;
+    });
+
+    function handleSelectedFile(file) {
+        const maxBytes = 1 * 1024 * 1024;
+        if (file.size > maxBytes) {
+            alert("File size exceeds the 1MB limit. Please upload a smaller document.");
+            fileInput.value = '';
+            submitBtn.disabled = true;
+            return;
+        }
+
+        selectedFileName.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        selectedFileInfo.classList.remove('hidden');
+        submitBtn.disabled = false;
+    }
+
+    function setStepState(stepId, state, detail = "") {
+        const stepEl = document.getElementById(stepId);
+        const iconContainer = stepEl.querySelector('.step-icon');
+        const statusMsg = stepEl.querySelector('.status-msg');
+        
+        stepEl.classList.remove('text-slate-400', 'text-brand-300', 'text-emerald-400', 'text-red-400');
+        
+        if (state === 'waiting') {
+            stepEl.classList.add('text-slate-400');
+            iconContainer.innerHTML = '<i class="fa-regular fa-circle text-slate-600"></i>';
+            statusMsg.textContent = detail || 'Waiting...';
+        } else if (state === 'running') {
+            stepEl.classList.add('text-brand-300');
+            iconContainer.innerHTML = '<i class="fa-solid fa-circle-notch animate-spin text-brand-400"></i>';
+            statusMsg.textContent = detail || 'Processing...';
+        } else if (state === 'success') {
+            stepEl.classList.add('text-emerald-400');
+            iconContainer.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-500"></i>';
+            statusMsg.textContent = detail || 'Completed successfully';
+        } else if (state === 'error') {
+            stepEl.classList.add('text-red-400');
+            iconContainer.innerHTML = '<i class="fa-solid fa-circle-xmark text-red-500"></i>';
+            statusMsg.textContent = detail || 'Step failed';
+        }
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        hideChat();
+        submitBtn.disabled = true;
+        resultCard.classList.add('hidden');
+        errorCard.classList.add('hidden');
+        
+        processingCard.classList.remove('hidden');
+        jobStatusBadge.textContent = 'submitting';
+        jobStatusBadge.className = "text-xs bg-slate-800 text-brand-300 font-mono px-2.5 py-1 rounded-full";
+        
+        setStepState('log-step-ingestion', 'running', 'Sending task payload to Redis queue...');
+        setStepState('log-step-vector', 'waiting', 'Pending task queueing...');
+        setStepState('log-step-extract', 'waiting', 'Pending indexing...');
+        setStepState('log-step-synthesize', 'waiting', 'Pending raw analysis...');
+        setStepState('log-step-meta', 'waiting', 'Pending global synthesis...');
+
+        processingCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        const formData = new FormData();
+        const file = fileInput.files[0];
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/api/summarize', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.detail || 'Failed to submit document to worker.');
+            }
+
+            const data = await response.json();
+            const jobId = data.job_id;
+            
+            jobStatusBadge.textContent = 'queued';
+            setStepState('log-step-ingestion', 'success', 'Task enqueued in Redis.');
+            
+            // Start polling
+            pollJobStatus(jobId);
+
+        } catch (error) {
+            submitBtn.disabled = false;
+            loggerError(error.message);
+        }
+    });
+
+    function pollJobStatus(jobId) {
+        if (pollInterval) clearInterval(pollInterval);
+        
+        pollInterval = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/job/${jobId}`);
+                if (!res.ok) {
+                    throw new Error('Failed to poll task status.');
+                }
+                const data = await res.json();
+                
+                jobStatusBadge.textContent = data.status;
+                
+                if (data.status === 'queued') {
+                    setStepState('log-step-ingestion', 'running', 'Waiting for worker process to pick up...');
+                } else if (data.status === 'started') {
+                    // Update steps based on worker progress meta
+                    const step = data.progress_step || '';
+                    jobStatusBadge.className = "text-xs bg-blue-500/10 text-blue-400 font-mono px-2.5 py-1 rounded-full border border-blue-500/20";
+                    
+                    setStepState('log-step-ingestion', 'success', 'Worker accepted task.');
+                    
+                    if (step === 'ingested') {
+                        setStepState('log-step-vector', 'running', 'Slicing document & writing vector embeddings to ChromaDB...');
+                    } else if (step === 'indexed') {
+                        setStepState('log-step-vector', 'success', `Text segmented. Chroma indexed.`);
+                        setStepState('log-step-extract', 'running', 'LangGraph node: Extracting chunk facts via llama-3.1-8b...');
+                    } else if (step === 'step_1_done') {
+                        setStepState('log-step-vector', 'success');
+                        setStepState('log-step-extract', 'success', 'All chunks facts extracted successfully.');
+                        setStepState('log-step-synthesize', 'running', 'LangGraph node: Topic synthesis & deduplication via llama-3.3-70b...');
+                    } else if (step === 'step_2_done') {
+                        setStepState('log-step-vector', 'success');
+                        setStepState('log-step-extract', 'success');
+                        setStepState('log-step-synthesize', 'success', 'Topic categories synthesized & organized.');
+                        setStepState('log-step-meta', 'running', 'LangGraph node: Executive brief & tags extraction...');
+                    }
+                } else if (data.status === 'finished') {
+                    clearInterval(pollInterval);
+                    jobStatusBadge.className = "text-xs bg-emerald-500/10 text-emerald-400 font-mono px-2.5 py-1 rounded-full border border-emerald-500/20";
+                    
+                    // Complete all log states
+                    setStepState('log-step-ingestion', 'success');
+                    setStepState('log-step-vector', 'success');
+                    setStepState('log-step-extract', 'success');
+                    setStepState('log-step-synthesize', 'success');
+                    setStepState('log-step-meta', 'success', 'LangGraph state machine processing completed.');
+                    
+                    setTimeout(() => {
+                        processingCard.classList.add('hidden');
+                        renderResults(data.result);
+                        initializeChatForDocument(data.result.document_id, data.result.filename);
+                    }, 1000);
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    submitBtn.disabled = false;
+                    jobStatusBadge.className = "text-xs bg-red-500/10 text-red-400 font-mono px-2.5 py-1 rounded-full border border-red-500/20";
+                    
+                    // Mark current running step as failed
+                    const steps = ['log-step-ingestion', 'log-step-vector', 'log-step-extract', 'log-step-synthesize', 'log-step-meta'];
+                    steps.forEach(stepId => {
+                        const stepEl = document.getElementById(stepId);
+                        if (stepEl.classList.contains('text-brand-300')) {
+                            setStepState(stepId, 'error', data.error || 'Worker execution failed.');
+                        }
+                    });
+                    
+                    throw new Error(data.error || 'Redis background task execution failed.');
+                }
+            } catch (error) {
+                clearInterval(pollInterval);
+                submitBtn.disabled = false;
+                loggerError(error.message);
+            }
+        }, 1500);
+    }
+
+    function loggerError(msg) {
+        processingCard.classList.add('hidden');
+        errorCard.classList.remove('hidden');
+        errorMessageText.textContent = msg;
+        errorCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function renderResults(data) {
+        document.getElementById('result-filename').textContent = data.filename;
+        document.getElementById('badge-size').textContent = `${data.file_size_kb} KB`;
+        document.getElementById('badge-chunks').textContent = `${data.num_chunks} Chunks`;
+        
+        const chromaBadge = document.getElementById('badge-chroma');
+        if (data.indexed_successfully) {
+            chromaBadge.textContent = "Indexed in ChromaDB";
+            chromaBadge.className = "bg-emerald-500/10 text-emerald-400 px-3 py-1.5 rounded-full border border-emerald-500/20";
+        } else {
+            chromaBadge.textContent = "ChromaDB Offline (Fallback Mode)";
+            chromaBadge.className = "bg-amber-500/10 text-amber-400 px-3 py-1.5 rounded-full border border-amber-500/20";
+        }
+        
+        document.getElementById('result-tone').textContent = data.tone || 'General';
+        document.getElementById('result-category').textContent = data.category || 'Information';
+        
+        const execSummaryText = document.getElementById('result-exec-summary');
+        if (Array.isArray(data.executive_summary)) {
+            execSummaryText.textContent = data.executive_summary.join(' ');
+        } else {
+            execSummaryText.textContent = data.executive_summary || 'No summary text generated.';
+        }
+        
+        const activeTraceBox = document.getElementById('langsmith-active-box');
+        const mockTraceBox = document.getElementById('langsmith-mock-box');
+        if (data.trace_url) {
+            activeTraceBox.classList.remove('hidden');
+            mockTraceBox.classList.add('hidden');
+            document.getElementById('langsmith-link').href = data.trace_url;
+        } else {
+            activeTraceBox.classList.add('hidden');
+            mockTraceBox.classList.remove('hidden');
+        }
+
+        const highlightsContainer = document.getElementById('highlights-container');
+        highlightsContainer.innerHTML = '';
+        if (data.highlights && data.highlights.length) {
+            data.highlights.forEach(section => {
+                const card = document.createElement('div');
+                card.className = "bg-slate-950/60 rounded-2xl border border-slate-800/80 p-5 space-y-3 relative hover:border-slate-700/80 transition-all duration-300";
+                
+                let bulletsHtml = '<ul class="space-y-2.5 text-xs sm:text-sm text-slate-400 list-none">';
+                section.bullets.forEach(bullet => {
+                    bulletsHtml += `
+                        <li class="flex items-start gap-2.5">
+                            <span class="text-brand-500 mt-1 flex-shrink-0 text-[10px]"><i class="fa-solid fa-circle"></i></span>
+                            <span class="leading-relaxed">${bullet}</span>
+                        </li>`;
+                });
+                bulletsHtml += '</ul>';
+
+                card.innerHTML = `
+                    <h5 class="display-font font-bold text-sm text-white uppercase tracking-wider border-b border-slate-800/60 pb-2 flex items-center gap-2">
+                        <span class="w-1 h-3.5 bg-brand-500 rounded-full"></span>
+                        <span>${section.topic}</span>
+                    </h5>
+                    ${bulletsHtml}
+                `;
+                highlightsContainer.appendChild(card);
+            });
+        } else {
+            highlightsContainer.innerHTML = '<p class="text-slate-500 text-sm">No highlights generated.</p>';
+        }
+
+        const entitiesContainer = document.getElementById('entities-container');
+        entitiesContainer.innerHTML = '';
+        if (data.entities && data.entities.length) {
+            data.entities.forEach(entity => {
+                const tag = document.createElement('span');
+                tag.className = "bg-brand-500/10 text-brand-300 border border-brand-500/20 px-3 py-1 rounded-full text-xs font-semibold";
+                tag.textContent = entity;
+                entitiesContainer.appendChild(tag);
+            });
+        } else {
+            entitiesContainer.innerHTML = '<span class="text-slate-500 text-xs">No entities extracted.</span>';
+        }
+
+        const timelineContainer = document.getElementById('timeline-container');
+        timelineContainer.innerHTML = '';
+        if (data.steps_timeline && data.steps_timeline.length) {
+            data.steps_timeline.forEach(step => {
+                const stepBox = document.createElement('div');
+                stepBox.className = "bg-slate-950/40 rounded-xl border border-slate-900 p-3 text-center space-y-1";
+                stepBox.innerHTML = `
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">${step.step}</p>
+                    <p class="text-xs font-mono text-brand-400 font-semibold">${step.model}</p>
+                    <p class="text-[10px] text-emerald-500">${step.status}</p>
+                `;
+                timelineContainer.appendChild(stepBox);
+            });
+        }
+
+        resultCard.classList.remove('hidden');
+        resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // ----------------- System Health Polling logic -----------------
+    async function updateSystemHealth() {
+        try {
+            const res = await fetch('/api/system/health');
+            if (res.ok) {
+                const data = await res.json();
+                updateHealthBadge('health-llm', data.services.groq_llm);
+                updateHealthBadge('health-chroma', data.services.chromadb);
+                updateHealthBadge('health-redis', data.services.redis_cache);
+            }
+        } catch (err) {
+            console.error('Failed to poll health status:', err);
+        }
+    }
+
+    function updateHealthBadge(elementId, service) {
+        const badge = document.getElementById(elementId);
+        if (!badge) return;
+        
+        badge.textContent = service.state.toUpperCase();
+        badge.className = "px-2 py-0.5 rounded font-mono border text-[10px] font-bold tracking-wider ";
+        
+        if (service.state === 'closed') {
+            badge.classList.add('bg-emerald-500/10', 'text-emerald-400', 'border-emerald-500/20');
+        } else if (service.state === 'open') {
+            badge.classList.add('bg-red-500/10', 'text-red-400', 'border-red-500/20');
+        } else {
+            badge.classList.add('bg-amber-500/10', 'text-amber-400', 'border-amber-500/20');
+        }
+    }
+
+    // Chat sidebar UI logic
+    const chatSidebar = document.getElementById('chat-sidebar');
+    const chatForm = document.getElementById('chat-form');
+    const chatInput = document.getElementById('chat-input');
+    const chatMessages = document.getElementById('chat-messages');
+    const chatTyping = document.getElementById('chat-typing');
+    const clearChatBtn = document.getElementById('clear-chat-btn');
+    const dashboardContainer = document.getElementById('dashboard-container');
+    const mainContentCol = document.getElementById('main-content-col');
+    
+    let activeDocumentId = null;
+    let chatSessionId = null;
+
+    // Helper to generate UUID for session
+    function generateUUID() {
+        return 'session_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    }
+
+    function appendMessage(role, content) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = "flex items-start gap-2 " + (role === 'user' ? 'justify-end' : '');
+        
+        const avatar = role === 'user' 
+            ? `<div class="w-6 h-6 rounded-full bg-indigo-600/20 text-indigo-400 border border-indigo-500/10 flex items-center justify-center font-bold text-[9px] order-2">ME</div>`
+            : `<div class="w-6 h-6 rounded-full bg-brand-600/20 text-brand-400 border border-brand-500/10 flex items-center justify-center font-bold text-[9px]">AI</div>`;
+            
+        const bubbleClass = role === 'user'
+            ? 'bg-gradient-to-br from-brand-600/85 to-indigo-600/85 border border-brand-500/20 rounded-2xl rounded-tr-none text-white'
+            : 'bg-slate-900/90 border border-slate-800 rounded-2xl rounded-tl-none text-slate-300';
+            
+        msgDiv.innerHTML = `
+            ${avatar}
+            <div class="${bubbleClass} p-3 max-w-[85%] leading-relaxed shadow-sm">
+                ${content.replace(/\n/g, '<br>')}
+            </div>
+        `;
+        
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function initializeChatForDocument(documentId, filename) {
+        activeDocumentId = documentId;
+        chatSessionId = generateUUID();
+        
+        // Reset chat display
+        chatMessages.innerHTML = '';
+        appendMessage('assistant', `Hello! I've successfully parsed and indexed **${filename}** into ChromaDB. Ask me any question from the document and I'll analyze it using the stateful chat agent!`);
+        
+        // Show sidebar with layouts
+        dashboardContainer.classList.remove('max-w-4xl');
+        dashboardContainer.classList.add('max-w-7xl');
+        mainContentCol.classList.remove('col-span-12');
+        mainContentCol.classList.add('lg:col-span-8');
+        chatSidebar.classList.remove('hidden');
+        chatSidebar.classList.add('flex');
+    }
+
+    function hideChat() {
+        activeDocumentId = null;
+        chatSessionId = null;
+        chatMessages.innerHTML = '';
+        
+        // Hide sidebar layouts
+        chatSidebar.classList.remove('flex');
+        chatSidebar.classList.add('hidden');
+        mainContentCol.classList.remove('lg:col-span-8');
+        mainContentCol.classList.add('col-span-12');
+        dashboardContainer.classList.remove('max-w-7xl');
+        dashboardContainer.classList.add('max-w-4xl');
+    }
+
+    clearChatBtn.addEventListener('click', () => {
+        if (activeDocumentId) {
+            chatSessionId = generateUUID(); // Resetting session ID resets the memory thread on backend
+            chatMessages.innerHTML = '';
+            appendMessage('assistant', "Chat history cleared. Session memory reset. How can I help you with the document now?");
+        }
+    });
+
+    chatForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const question = chatInput.value.trim();
+        if (!question || !activeDocumentId) return;
+        
+        chatInput.value = '';
+        appendMessage('user', question);
+        
+        // Show typing indicator
+        chatTyping.classList.remove('hidden');
+        chatTyping.classList.add('flex');
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    document_id: activeDocumentId,
+                    message: question,
+                    session_id: chatSessionId
+                })
+            });
+            
+            chatTyping.classList.remove('flex');
+            chatTyping.classList.add('hidden');
+            
+            if (res.ok) {
+                const data = await res.json();
+                appendMessage('assistant', data.answer);
+            } else {
+                const errData = await res.json();
+                appendMessage('assistant', `⚠️ Error: ${errData.detail || 'Failed to query assistant.'}`);
+            }
+        } catch (err) {
+            chatTyping.classList.remove('flex');
+            chatTyping.classList.add('hidden');
+            appendMessage('assistant', `⚠️ Network error: Could not reach the assistant.`);
+            console.error('Chat error:', err);
+        }
+    });
+
+    // Initialize health statuses poller
+    updateSystemHealth();
+    setInterval(updateSystemHealth, 5000);
+
+</script>
+{% endblock %}
