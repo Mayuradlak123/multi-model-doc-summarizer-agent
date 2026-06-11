@@ -14,3 +14,4 @@ neo4j>=5.18.0
 rq>=1.16.2
 langgraph>=0.0.26
 langchain-core>=0.1.30
+psycopg2-binary>=2.9.9

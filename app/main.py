@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
 
-from app.config import logger, settings, neo4j_manager
+from app.config import logger, settings, neo4j_manager, postgres_manager
 from app.routes import api, web
 
 @asynccontextmanager
@@ -12,6 +12,10 @@ async def lifespan(app: FastAPI):
     # Startup tasks
     logger.info(f"Starting {settings.APP_NAME}...")
     logger.info(f"API configurations: Groq Active = {settings.is_groq_available}, LangSmith Active = {settings.is_langsmith_configured}")
+    try:
+        postgres_manager.connect()
+    except Exception as e:
+        logger.error(f"PostgreSQL connection initialization failed: {str(e)}")
     yield
     # Shutdown tasks
     logger.info("Shutting down application, cleaning connections...")
@@ -19,6 +23,10 @@ async def lifespan(app: FastAPI):
         neo4j_manager.close()
     except Exception as e:
         logger.error(f"Error closing Neo4j: {str(e)}")
+    try:
+        postgres_manager.close()
+    except Exception as e:
+        logger.error(f"Error closing PostgreSQL: {str(e)}")
 
 app = FastAPI(
     title=settings.APP_NAME,

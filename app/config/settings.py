@@ -37,6 +37,14 @@ class Settings:
     NEO4J_USER: str = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
     NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "")
     
+    # PostgreSQL Config
+    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", 5432))
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "postgres")
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "")
+    POSTGRES_URL: str = os.getenv("POSTGRES_URL", "")
+    
     @property
     def is_groq_available(self) -> bool:
         return bool(self.GROQ_API_KEY.strip())
