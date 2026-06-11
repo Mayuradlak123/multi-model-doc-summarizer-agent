@@ -1,3 +1,4 @@
+import os
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
@@ -8,6 +9,8 @@ from pydantic import BaseModel
 from app.config import logger, settings, redis_client, redis_breaker, llm_breaker, chroma_breaker
 from app.services.tasks import process_document_task
 from app.services.chat_agent import chat_agent_graph
+from app.db.repositories import create_document, create_chat_message
+
 
 router = APIRouter(prefix="/api")
 
@@ -35,6 +38,32 @@ async def summarize_document(file: UploadFile = File(...)):
             detail="File size exceeds the 1 MB limit. Please upload a smaller document."
         )
         
+    # Generate unique document ID
+    document_id = str(uuid.uuid4())
+    
+    # Store file under 'storage' directory
+    try:
+        os.makedirs("storage", exist_ok=True)
+        file_path = os.path.join("storage", f"{document_id}_{filename}")
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"Successfully saved uploaded document to disk: {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to save uploaded document to storage directory: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not store uploaded document on disk.")
+        
+    # Register document in PostgreSQL database
+    db_success = create_document(
+        doc_id=document_id,
+        filename=filename,
+        file_path=file_path,
+        file_size_kb=round(file_size_bytes / 1024, 2)
+    )
+    if db_success:
+        logger.info(f"Successfully stored document {document_id} metadata in PostgreSQL.")
+    else:
+        logger.warning(f"Failed to store document {document_id} metadata in PostgreSQL (DB offline or error). Proceeding.")
+
     # Enqueue in Redis Queue, protected by redis_breaker
     if redis_client:
         try:
@@ -42,7 +71,7 @@ async def summarize_document(file: UploadFile = File(...)):
                 queue = Queue("default", connection=redis_client)
                 return queue.enqueue(
                     process_document_task,
-                    args=(filename, file_bytes),
+                    args=(document_id, filename, file_bytes),
                     job_timeout=600
                 )
             
@@ -51,7 +80,7 @@ async def summarize_document(file: UploadFile = File(...)):
             if job:
                 job_id = job.get_id()
                 logger.info(f"Successfully enqueued background task in Redis (via Circuit Breaker). Job ID: {job_id}")
-                return {"job_id": job_id, "status": "queued"}
+                return {"job_id": job_id, "document_id": document_id, "status": "queued"}
                 
         except Exception as e:
             logger.warning(f"Redis enqueuing failed or circuit breaker tripped: {str(e)}. Falling back to synchronous processing.")
@@ -62,20 +91,27 @@ async def summarize_document(file: UploadFile = File(...)):
     
     try:
         # Execute processing synchronously in the main thread
-        result = process_document_task(filename, file_bytes)
+        result = process_document_task(document_id, filename, file_bytes)
         FALLBACK_JOBS[job_id] = {
             "status": "finished",
             "progress_step": "completed",
             "result": result
         }
+    except ValueError as ve:
+        logger.warning(f"Validation failure during synchronous processing: {str(ve)}")
+        FALLBACK_JOBS[job_id] = {
+            "status": "failed",
+            "error": str(ve)
+        }
     except Exception as e:
-        logger.error(f"Fallback synchronous processing failed: {str(e)}")
+        logger.error(f"Fallback synchronous processing failed: {str(e)}", exc_info=True)
         FALLBACK_JOBS[job_id] = {
             "status": "failed",
             "error": str(e)
         }
         
-    return {"job_id": job_id, "status": "finished" if "result" in FALLBACK_JOBS[job_id] else "failed"}
+    return {"job_id": job_id, "document_id": document_id, "status": "finished" if "result" in FALLBACK_JOBS[job_id] else "failed"}
+
 
 @router.get("/job/{job_id}")
 async def get_job_status(job_id: str):
@@ -160,8 +196,24 @@ async def chat_with_document(req: ChatRequest):
     
     try:
         result = chat_agent_graph.invoke(inputs, config)
+        
+        # Save user query and assistant response in PostgreSQL
+        answer = result.get("answer", "")
+        create_chat_message(
+            doc_id=req.document_id,
+            thread_id=thread_id,
+            role="user",
+            message=req.message
+        )
+        create_chat_message(
+            doc_id=req.document_id,
+            thread_id=thread_id,
+            role="assistant",
+            message=answer
+        )
+        
         return {
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "chat_history": result.get("chat_history", [])
         }
     except Exception as e:
@@ -170,3 +222,4 @@ async def chat_with_document(req: ChatRequest):
             status_code=500,
             detail=f"An error occurred while communicating with the document assistant: {str(e)}"
         )
+

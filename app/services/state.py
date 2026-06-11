@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, TypedDict
 
 class AgentState(TypedDict):
+    document_id: str
     filename: str
     chunks: List[Dict[str, Any]]
     raw_highlights: List[str]
@@ -12,3 +13,4 @@ class AgentState(TypedDict):
     is_mock: bool
     steps_timeline: List[Dict[str, Any]]
     error: str
+

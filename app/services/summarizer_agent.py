@@ -205,8 +205,13 @@ from .state import AgentState
 
 def extract_chunks_node(state: AgentState) -> Dict[str, Any]:
     """LangGraph node to extract facts from individual chunks."""
+    import time
+    from app.db.repositories import create_summary_step
+
     update_job_progress("indexed")
+    t_start = time.perf_counter()
     
+    document_id = state.get("document_id")
     chunks = state["chunks"]
     filename = state["filename"]
     is_mock = state["is_mock"]
@@ -214,6 +219,10 @@ def extract_chunks_node(state: AgentState) -> Dict[str, Any]:
     timeline = list(state.get("steps_timeline", []))
     
     if is_mock:
+        duration = time.perf_counter() - t_start
+        status_msg = "Simulated highlight extraction"
+        if document_id:
+            create_summary_step(document_id, "Step 1: Chunk Highlight Extraction", status_msg, duration)
         return {
             "raw_highlights": ["Mock bullet 1", "Mock bullet 2"],
             "steps_timeline": timeline + [
@@ -238,6 +247,10 @@ def extract_chunks_node(state: AgentState) -> Dict[str, Any]:
     if cache_hits > 0:
         status_msg += f" ({cache_hits} semantic cache hits)"
         
+    duration = time.perf_counter() - t_start
+    if document_id:
+        create_summary_step(document_id, "Step 1: Chunk Highlight Extraction", status_msg, duration)
+        
     return {
         "raw_highlights": raw_highlights,
         "steps_timeline": timeline + [
@@ -247,14 +260,23 @@ def extract_chunks_node(state: AgentState) -> Dict[str, Any]:
 
 def synthesize_highlights_node(state: AgentState) -> Dict[str, Any]:
     """LangGraph node to merge and synthesis the extracted facts."""
+    import time
+    from app.db.repositories import create_summary_step
+
     update_job_progress("step_1_done")
+    t_start = time.perf_counter()
     
+    document_id = state.get("document_id")
     raw_highlights = state["raw_highlights"]
     is_mock = state["is_mock"]
     
     timeline = list(state.get("steps_timeline", []))
     
     if is_mock:
+        duration = time.perf_counter() - t_start
+        status_msg = "Simulated synthesis"
+        if document_id:
+            create_summary_step(document_id, "Step 2: Global Synthesis & Deduplication", status_msg, duration)
         return {
             "synthesized_markdown": "### Highlights\n- Mock bullet point",
             "steps_timeline": timeline + [
@@ -263,6 +285,10 @@ def synthesize_highlights_node(state: AgentState) -> Dict[str, Any]:
         }
         
     synthesized_md = synthesize_global_highlights(raw_highlights)
+    duration = time.perf_counter() - t_start
+    if document_id:
+        create_summary_step(document_id, "Step 2: Global Synthesis & Deduplication", "Topics grouped and deduplicated", duration)
+        
     return {
         "synthesized_markdown": synthesized_md,
         "steps_timeline": timeline + [
@@ -272,8 +298,13 @@ def synthesize_highlights_node(state: AgentState) -> Dict[str, Any]:
 
 def meta_analysis_node(state: AgentState) -> Dict[str, Any]:
     """LangGraph node to run document meta-analysis (tone, category, summary, entities)."""
+    import time
+    from app.db.repositories import create_summary_step
+
     update_job_progress("step_2_done")
+    t_start = time.perf_counter()
     
+    document_id = state.get("document_id")
     synthesized_md = state["synthesized_markdown"]
     is_mock = state["is_mock"]
     
@@ -281,6 +312,10 @@ def meta_analysis_node(state: AgentState) -> Dict[str, Any]:
     
     if is_mock:
         mock_res = MOCK_SUMMARY_DATA
+        duration = time.perf_counter() - t_start
+        status_msg = f"Simulated. Tone: {mock_res['tone']}, Category: {mock_res['category']}"
+        if document_id:
+            create_summary_step(document_id, "Step 3: Executive Summary & Meta-Analysis", status_msg, duration)
         return {
             "executive_summary": mock_res["executive_summary"],
             "tone": mock_res["tone"],
@@ -292,6 +327,11 @@ def meta_analysis_node(state: AgentState) -> Dict[str, Any]:
         }
         
     meta_result = run_meta_analysis(synthesized_md)
+    duration = time.perf_counter() - t_start
+    status_msg = f"Completed meta-analysis. Tone: {meta_result.get('tone')}, Category: {meta_result.get('category')}"
+    if document_id:
+        create_summary_step(document_id, "Step 3: Executive Summary & Meta-Analysis", status_msg, duration)
+        
     return {
         "executive_summary": meta_result.get("executive_summary", ""),
         "tone": meta_result.get("tone", ""),
@@ -318,7 +358,7 @@ summarizer_graph = builder.compile()
 # ---------------------------------------------------------
 
 @traceable(name="Document Summarization Pipeline")
-def run_summarization_pipeline(filename: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def run_summarization_pipeline(document_id: str, filename: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Runs the stateful summarizer graph workflow."""
     is_mock = not settings.is_groq_available
     
@@ -328,6 +368,7 @@ def run_summarization_pipeline(filename: str, chunks: List[Dict[str, Any]]) -> D
     
     # Initialize state
     initial_state = {
+        "document_id": document_id,
         "filename": filename,
         "chunks": chunks,
         "raw_highlights": [],
@@ -355,7 +396,7 @@ def run_summarization_pipeline(filename: str, chunks: List[Dict[str, Any]]) -> D
             trace_url = None
             
         return {
-            "document_id": str(uuid.uuid4()),
+            "document_id": document_id,
             "filename": filename,
             "executive_summary": final_state["executive_summary"],
             "tone": final_state["tone"],
@@ -369,3 +410,4 @@ def run_summarization_pipeline(filename: str, chunks: List[Dict[str, Any]]) -> D
     except Exception as e:
         logger.error(f"Failed to execute state graph pipeline: {str(e)}")
         raise e
+
