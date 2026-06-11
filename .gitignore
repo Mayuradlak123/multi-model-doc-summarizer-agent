@@ -113,9 +113,10 @@ conda-env/
 
 # Databases and Vector Stores
 chroma_db/
-db/
+/db/
 *.db
 *.sqlite
 data/
 neo4j/
 redis/
+storage/
