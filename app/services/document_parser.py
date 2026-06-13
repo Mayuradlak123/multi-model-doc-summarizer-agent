@@ -10,6 +10,77 @@ MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB in bytes
 def validate_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
+def ocr_pdf_via_vision(file_bytes: bytes) -> str:
+    """
+    Extracts images from PDF pages and uses Groq Vision model to perform OCR on them.
+    """
+    import base64
+    from app.config import settings
+    from groq import Groq
+    
+    if not settings.is_groq_available:
+        logger.warning("GROQ_API_KEY is not configured. Cannot perform Vision OCR for scanned PDF.")
+        return ""
+        
+    try:
+        pdf_file = io.BytesIO(file_bytes)
+        reader = PdfReader(pdf_file)
+        
+        extracted_texts = []
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        
+        for page_num, page in enumerate(reader.pages):
+            logger.info(f"Extracting images from page {page_num + 1}...")
+            page_text = ""
+            
+            for img_idx, img_obj in enumerate(page.images):
+                try:
+                    img_bytes = img_obj.data
+                    base64_image = base64.b64encode(img_bytes).decode('utf-8')
+                    
+                    # Detect format (default to jpeg if name has no ext or isn't png)
+                    ext = os.path.splitext(img_obj.name)[1].lower().replace(".", "")
+                    if ext not in ("png", "jpeg", "jpg", "webp"):
+                        ext = "jpeg"
+                    if ext == "jpg":
+                        ext = "jpeg"
+                        
+                    logger.info(f"Sending page {page_num + 1} image {img_idx + 1} to Groq Vision model...")
+                    chat_completion = client.chat.completions.create(
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Extract all readable text from this document image. Return only the extracted text. Do not add comments, intro, or description."
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/{ext};base64,{base64_image}"
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        temperature=0.1
+                    )
+                    ocr_text = chat_completion.choices[0].message.content.strip()
+                    if ocr_text:
+                        page_text += ocr_text + "\n"
+                except Exception as img_err:
+                    logger.error(f"Failed to perform Vision OCR on page {page_num + 1} image {img_idx + 1}: {str(img_err)}")
+                    
+            if page_text:
+                extracted_texts.append(f"--- Page {page_num + 1} OCR Text ---\n" + page_text)
+                
+        return "\n\n".join(extracted_texts).strip()
+    except Exception as e:
+        logger.error(f"Error performing Vision OCR on PDF: {str(e)}")
+        return ""
+
 def parse_pdf(file_bytes: bytes) -> str:
     try:
         pdf_file = io.BytesIO(file_bytes)
@@ -19,7 +90,16 @@ def parse_pdf(file_bytes: bytes) -> str:
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-        return text.strip()
+        
+        text = text.strip()
+        # Fallback to Vision OCR if extracted text is empty/extremely short
+        if len(text) < 100:
+            logger.info("Extracted PDF text is empty or very short. Attempting Vision OCR on page images...")
+            ocr_text = ocr_pdf_via_vision(file_bytes)
+            if ocr_text:
+                text = ocr_text
+                
+        return text
     except Exception as e:
         logger.error(f"Error parsing PDF: {str(e)}")
         raise ValueError(f"Failed to parse PDF document: {str(e)}")

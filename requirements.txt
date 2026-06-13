@@ -17,5 +17,3 @@ langchain-core>=0.1.30
 psycopg2-binary>=2.9.9
 sqlalchemy>=2.0.0
 mcp>=1.0.0
-
-

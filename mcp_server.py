@@ -129,6 +129,90 @@ def get_pipeline_timeline(document_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         return [{"error": f"Failed to retrieve step logs: {str(e)}"}]
 
+@mcp.tool()
+def get_system_health() -> Dict[str, Any]:
+    """Retrieve the current health and state (closed/open/half-open) of all system circuit breakers (Groq LLM, ChromaDB, and Redis)."""
+    from app.config import llm_breaker, chroma_breaker, redis_breaker
+    
+    return {
+        "services": {
+            "groq_llm": {
+                "state": llm_breaker.state.name,
+                "tripped": llm_breaker.state.name == "open"
+            },
+            "chromadb": {
+                "state": chroma_breaker.state.name,
+                "tripped": chroma_breaker.state.name == "open"
+            },
+            "redis_cache": {
+                "state": redis_breaker.state.name,
+                "tripped": redis_breaker.state.name == "open"
+            }
+        }
+    }
+
+@mcp.tool()
+def get_job_status(job_id: str) -> Dict[str, Any]:
+    """Retrieve the current progress and status of an asynchronous background document processing job using its Job ID."""
+    from app.config import redis_client, redis_breaker
+    from rq.job import Job
+    from app.routes.api import FALLBACK_JOBS
+    
+    # 1. Check fallback jobs first
+    if job_id.startswith("local_"):
+        if job_id in FALLBACK_JOBS:
+            return FALLBACK_JOBS[job_id]
+        return {"error": f"Fallback job {job_id} not found."}
+        
+    # 2. Check Redis
+    if not redis_client:
+        return {"error": "Redis connection is offline. Cannot check background jobs."}
+        
+    try:
+        def fetch_job():
+            return Job.fetch(job_id, connection=redis_client)
+        job = redis_breaker.call(fetch_job)
+        
+        status = job.get_status()
+        progress_step = job.meta.get('progress_step', '')
+        
+        result = None
+        error = None
+        
+        if status == 'finished':
+            res = job.result
+            result = {
+                "document_id": res.get("document_id"),
+                "filename": res.get("filename"),
+                "num_chunks": res.get("num_chunks"),
+                "executive_summary": res.get("executive_summary")
+            }
+        elif status == 'failed':
+            error = job.exc_info or "Background task crashed."
+            if error and len(error) > 300:
+                error = error[:300] + "..."
+                
+        return {
+            "job_id": job_id,
+            "status": status,
+            "progress_step": progress_step,
+            "result": result,
+            "error": error
+        }
+    except Exception as e:
+        return {"error": f"Job {job_id} not found or Redis connection error: {str(e)}"}
+
+@mcp.tool()
+def get_chat_history_log(document_id: str, session_id: str = None) -> List[Dict[str, Any]]:
+    """Retrieve the full historical chat conversation log for a specific document session/thread."""
+    from app.db.repositories import get_chat_history
+    
+    thread_id = session_id if session_id else document_id
+    try:
+        return get_chat_history(doc_id=document_id, thread_id=thread_id)
+    except Exception as e:
+        return [{"error": f"Failed to retrieve chat history: {str(e)}"}]
+
 if __name__ == "__main__":
     # Standard FastMCP CLI execution
     mcp.run()

@@ -2,13 +2,17 @@ import logging
 from logging.config import dictConfig
 import os
 
-# Ensure logs directory exists
-os.makedirs("logs", exist_ok=True)
+# Ensure logs directory exists using absolute path
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(CONFIG_DIR))
+logs_dir = os.path.join(PROJECT_ROOT, "logs")
+os.makedirs(logs_dir, exist_ok=True)
+log_file_path = os.path.join(logs_dir, "application.log")
 
 log_config = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {
+    "formatters": { 
         "console": {
             "()": "uvicorn.logging.DefaultFormatter",
             "fmt": "%(levelprefix)s %(asctime)s - %(message)s",
@@ -27,7 +31,7 @@ log_config = {
         "file": {
             "formatter": "file",
             "class": "logging.FileHandler",
-            "filename": "logs/application.log",  # log file path
+            "filename": log_file_path,  # log file absolute path
             "mode": "a",  # append mode
             "encoding": "utf-8"
         },

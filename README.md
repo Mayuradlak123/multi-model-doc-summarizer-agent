@@ -98,3 +98,49 @@ In a separate terminal, start the FastAPI web server:
 ./run.sh
 ```
 Open your browser and navigate to `http://127.0.0.1:8000`.
+
+---
+
+## 🔌 Claude Desktop MCP Integration
+
+The system includes a custom MCP server (`mcp_server.py`) to expose document summaries, RAG chat, and system health checks directly to the Claude Desktop application as tools.
+
+### ⚙️ Claude Desktop Configuration
+Add the server configuration to your `claude_desktop_config.json`:
+
+* **Standard Windows path**: `%APPDATA%\Claude\claude_desktop_config.json`
+* **Windows Store (MSIX) path**: `%USERPROFILE%\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "document-summarizer-agent": {
+      "command": "python",
+      "args": [
+        "/path/to/your/project/mcp_server.py"
+      ],
+      "env": {
+        "GROQ_API_KEY": "...",
+        "REDIS_URL": "redis://localhost:6379",
+        "CHROMA_API_KEY": "...",
+        "POSTGRES_URL": "..."
+      }
+    }
+  }
+}
+```
+
+### 🧠 Operational Lessons & Gotchas (Global Memory)
+When configuring and running this local MCP server, be aware of the following architectural constraints:
+
+1. **Lazy Imports & Connection Overhead**: 
+   Claude Desktop has a strict **10-second timeout** for MCP tools. Do not initialize database connections (Chroma, Redis, Neo4j) at the module level. They must be lazy-loaded (using PEP 562 `__getattr__` or similar) so the MCP process boots in under **2 seconds**.
+2. **Absolute Paths for Logging**:
+   Claude Desktop runs the Python process inside its own sandboxed workspace directory. Relative log paths (e.g. `logs/application.log`) will cause a startup crash with `ValueError: Unable to configure handler 'file'`. Ensure all file paths and log directories are resolved as **absolute paths** relative to the project root.
+3. **Claude Process Locking**:
+   When updating the MCP code or environment variables in `claude_desktop_config.json`, background `claude.exe` processes may lock files or keep running old versions. Terminate them explicitly to force a clean reload:
+   ```powershell
+   Stop-Process -Name claude -Force -ErrorAction SilentlyContinue
+   ```
+4. **Independent Lifecycle**:
+   The MCP server runs in its own subprocess. It connects directly to the database and APIs, meaning it works **independently of the FastAPI web app**. You do not need `npm run dev` or `./run.sh` running for the MCP tools to function.

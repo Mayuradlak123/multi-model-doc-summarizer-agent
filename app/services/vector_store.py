@@ -30,21 +30,31 @@ def get_embedding_fn():
         logger.warning(f"Could not initialize SentenceTransformer ({str(e)}). Using lightweight fallback embedding function.")
         return SimpleEmbeddingFunction()
 
-embedding_fn = get_embedding_fn()
+_embedding_fn = None
+
+def get_shared_embedding_fn():
+    global _embedding_fn
+    if _embedding_fn is None:
+        _embedding_fn = get_embedding_fn()
+    return _embedding_fn
 
 class VectorStoreService:
     def __init__(self):
         self.client = chroma_client
-        self.cache_collection = None
-        if self.client:
+        self._cache_collection = None
+
+    @property
+    def cache_collection(self):
+        if self._cache_collection is None and self.client:
             try:
-                self.cache_collection = self.client.get_or_create_collection(
+                self._cache_collection = self.client.get_or_create_collection(
                     name="semantic_cache",
-                    embedding_function=embedding_fn
+                    embedding_function=get_shared_embedding_fn()
                 )
                 logger.info("Semantic cache collection 'semantic_cache' initialized in ChromaDB.")
             except Exception as e:
                 logger.error(f"Failed to initialize semantic cache collection: {str(e)}")
+        return self._cache_collection
 
     @with_breaker(chroma_breaker, lambda *args, **kwargs: None)
     def check_cache(self, text: str, threshold: float = 0.15) -> str | None:
@@ -109,7 +119,7 @@ class VectorStoreService:
                 
             collection = self.client.create_collection(
                 name=collection_name,
-                embedding_function=embedding_fn
+                embedding_function=get_shared_embedding_fn()
             )
             
             ids = [f"{document_id}_chunk_{c['chunk_index']}" for c in chunks]
@@ -145,7 +155,7 @@ class VectorStoreService:
             
             collection = self.client.get_collection(
                 name=collection_name,
-                embedding_function=embedding_fn
+                embedding_function=get_shared_embedding_fn()
             )
             
             count = collection.count()

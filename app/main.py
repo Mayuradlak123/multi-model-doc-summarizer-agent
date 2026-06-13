@@ -45,6 +45,10 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.include_router(web.router)
 app.include_router(api.router)
 
+# Mount MCP Server (SSE Transport)
+from mcp_server import mcp
+app.mount("/mcp", mcp.sse_app())
+
 # Custom exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
